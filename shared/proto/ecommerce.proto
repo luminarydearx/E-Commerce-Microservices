@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package ecommerce.shared.v1;
+
+option go_package = "ecommerce/shared/proto/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+
+// ===== Common =====
+
+message AuditEvent {
+  string event_id = 1;
+  google.protobuf.Timestamp occurred_at = 2;
+  string producer = 3;
+  string action = 4;
+  Actor actor = 5;
+  Resource resource = 6;
+  string correlation_id = 7;
+  string request_id = 8;
+  string version = 9;
+}
+
+message Actor {
+  string user_id = 1;
+  string role = 2;
+  string ip = 3;
+  string user_agent = 4;
+}
+
+message Resource {
+  string type = 1;
+  string id = 2;
+  bytes before = 3;  // JSON
+  bytes after = 4;   // JSON
+}
+
+message ErrorReport {
+  string service = 1;
+  string environment = 2;
+  string level = 3;  // error, warning, fatal
+  string error_type = 4;
+  string message = 5;
+  string stack_trace = 6;
+  bytes context = 7;  // JSON
+  string request_id = 8;
+  string correlation_id = 9;
+  string user_id = 10;
+}
+
+// ===== Catalog Service gRPC =====
+
+service CatalogService {
+  rpc GetProduct(GetProductRequest) returns (Product);
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+  rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);
+  rpc ConfirmStock(ConfirmStockRequest) returns (ConfirmStockResponse);
+}
+
+message GetProductRequest {
+  string product_id = 1;
+}
+
+message Product {
+  string id = 1;
+  string seller_id = 2;
+  string category_id = 3;
+  string sku = 4;
+  string name = 5;
+  string slug = 6;
+  string description = 7;
+  string price = 8;  // decimal as string
+  string currency = 9;
+  int32 stock = 10;
+  int32 reserved_stock = 11;
+  int32 available_stock = 12;
+  string status = 13;
+  bool is_active = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+}
+
+message ReserveStockRequest {
+  string product_id = 1;
+  int32 quantity = 2;
+  string user_id = 3;
+  string cart_id = 4;
+}
+
+message ReserveStockResponse {
+  string reservation_id = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ReleaseStockRequest {
+  string reservation_id = 1;
+}
+
+message ReleaseStockResponse {
+  bool success = 1;
+}
+
+message ConfirmStockRequest {
+  string reservation_id = 1;
+}
+
+message ConfirmStockResponse {
+  bool success = 1;
+}
+
+// ===== Order Service gRPC =====
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc UpdatePaymentStatus(UpdatePaymentStatusRequest) returns (UpdatePaymentStatusResponse);
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message Order {
+  string id = 1;
+  string user_id = 2;
+  string status = 3;
+  string total_amount = 4;
+  string currency = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+message UpdatePaymentStatusRequest {
+  string order_id = 1;
+  string payment_id = 2;
+  string status = 3;  // SUCCEEDED, FAILED
+}
+
+message UpdatePaymentStatusResponse {
+  bool success = 1;
+}
+
+// ===== Payment Service gRPC =====
+
+service PaymentService {
+  rpc GetPayment(GetPaymentRequest) returns (Payment);
+}
+
+message GetPaymentRequest {
+  string payment_id = 1;
+}
+
+message Payment {
+  string id = 1;
+  string order_id = 2;
+  string user_id = 3;
+  string amount = 4;
+  string currency = 5;
+  string status = 6;
+  string method = 7;
+  string provider = 8;
+  string provider_tx_id = 9;
+  google.protobuf.Timestamp created_at = 10;
+}

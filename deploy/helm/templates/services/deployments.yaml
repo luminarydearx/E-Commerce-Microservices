@@ -1,0 +1,188 @@
+{{/*
+Generate Deployment + Service + HPA + PDB for each enabled service.
+Iterates over .Values.services map.
+*/}}
+{{- range $name, $svc := .Values.services -}}
+{{- if $svc.enabled }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: {{ $svc.replicas | default $.Values.serviceDefaults.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ $svc.port }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        {{- include "ecommerce.securityContext" $ | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "ecommerce.image" (dict "name" $name "Values" $.Values) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ $.Values.global.environment | quote }}
+            - name: SERVICE_NAME
+              value: {{ $name | quote }}
+            - name: PORT
+              value: {{ $svc.port | quote }}
+            {{- range $k, $v := $svc.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := $svc.secrets }}
+            - name: {{ $k | upper | replace "-" "_" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}-secret
+                  key: {{ $k }}
+            {{- end }}
+          resources:
+            {{- toYaml ($svc.resources | default $.Values.serviceDefaults.resources) | nindent 12 }}
+          securityContext:
+            {{- include "ecommerce.podSecurityContext" $ | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30  # 5 min startup grace
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+
+{{- if or ($svc.autoscaling | default $.Values.serviceDefaults.autoscaling).enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ ($svc.autoscaling | default $.Values.serviceDefaults.autoscaling).minReplicas }}
+  maxReplicas: {{ ($svc.autoscaling | default $.Values.serviceDefaults.autoscaling).maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ ($svc.autoscaling | default $.Values.serviceDefaults.autoscaling).targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ ($svc.autoscaling | default $.Values.serviceDefaults.autoscaling).targetMemoryUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}
+
+{{- if or ($svc.podDisruptionBudget | default $.Values.serviceDefaults.podDisruptionBudget).enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  minAvailable: {{ ($svc.podDisruptionBudget | default $.Values.serviceDefaults.podDisruptionBudget).minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+{{- end }}
+
+{{- if $svc.secrets }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-secret
+  namespace: {{ $.Release.Namespace }}
+type: Opaque
+data:
+  {{- range $k, $v := $svc.secrets }}
+  {{ $k }}: {{ $v | b64enc | quote }}
+  {{- end }}
+{{- end }}
+
+{{- end }}
+{{- end }}

@@ -1,0 +1,398 @@
+# =====================================================================
+# E-Commerce Microservices Helm Chart — Values
+# =====================================================================
+# Copy this file, edit, and install with:
+#   helm install ecommerce ./deploy/helm -f my-values.yaml -n ecommerce --create-namespace
+#
+# This file documents ALL configurable knobs. Defaults are tuned for
+# small production (5k-10k RPS). Adjust per environment.
+# =====================================================================
+
+# ----- Global -----
+global:
+  imageRegistry: "ghcr.io/luminarydearx"
+  imagePullSecrets: []
+  imageTag: "1.0.0"
+  environment: "production"
+  storageClass: "standard"
+  # Internal mTLS — cert-manager Issuer
+  mtls:
+    enabled: false
+    clusterIssuer: "internal-ca"
+
+# ----- Image Pull Policy -----
+image:
+  pullPolicy: IfNotPresent
+
+# ----- Ingress -----
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+  hosts:
+    - host: api.ecommerce.local
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-gateway
+  tls:
+    - secretName: api-tls
+      hosts:
+        - api.ecommerce.local
+
+# =====================================================================
+# Service Mesh & Observability
+# =====================================================================
+
+# OpenTelemetry Collector (deployed via otel-collector chart)
+otelCollector:
+  enabled: true
+  endpoint: "otel-collector:4317"
+
+# Prometheus (external via kube-prometheus-stack)
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    selector:
+      release: "prometheus"
+
+# Grafana dashboards ConfigMap
+grafana:
+  dashboards:
+    enabled: true
+    namespace: "monitoring"
+
+# =====================================================================
+# Service Defaults (overridable per service)
+# =====================================================================
+
+serviceDefaults:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    fsGroup: 10001
+  podSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+# =====================================================================
+# Individual Services
+# =====================================================================
+
+services:
+
+  # --- API Gateway (Go) ---
+  api-gateway:
+    enabled: true
+    port: 8080
+    replicas: 3
+    resources:
+      requests: {cpu: 200m, memory: 256Mi}
+      limits: {cpu: 1000m, memory: 1Gi}
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 20
+      targetCPUUtilizationPercentage: 70
+    config:
+      rateLimit:
+        globalRPS: 1000
+        authRPS: 5
+        checkoutRPS: 10
+    env:
+      REDIS_URL: "redis://redis-master:6379/6"
+      OTEL_ENDPOINT: "otel-collector:4317"
+    secrets:
+      jwtPublicKey: "changeme"  # base64-encoded PEM
+    ingress:
+      enabled: true  # expose via ingress
+
+  # --- Auth Service (Python) ---
+  auth-service:
+    enabled: true
+    port: 8001
+    replicas: 2
+    env:
+      DATABASE_URL: "postgresql+asyncpg://ecommerce:$(DB_PASSWORD)@postgresql:5432/auth_db"
+      REDIS_URL: "redis://redis-master:6379/0"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      OTEL_ENDPOINT: "otel-collector:4317"
+    secrets:
+      jwtPrivateKey: "changeme"  # base64-encoded PEM
+      jwtPublicKey: "changeme"
+
+  # --- Catalog Service (Java) ---
+  catalog-service:
+    enabled: true
+    port: 8002
+    replicas: 2
+    resources:
+      requests: {cpu: 500m, memory: 512Mi}
+      limits: {cpu: 2000m, memory: 2Gi}
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 15
+    env:
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgresql:5432/catalog_db"
+      SPRING_DATA_REDIS_URL: "redis://redis-master:6379/1"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      OTEL_ENDPOINT: "http://otel-collector:4318"
+
+  # --- Order Service (Go) ---
+  order-service:
+    enabled: true
+    port: 8003
+    replicas: 2
+    env:
+      DATABASE_URL: "postgres://ecommerce:$(DB_PASSWORD)@postgresql:5432/order_db"
+      REDIS_URL: "redis://redis-master:6379/2"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      CATALOG_SERVICE_URL: "http://catalog-service:8002"
+      PAYMENT_SERVICE_URL: "http://payment-service:8004"
+    secrets:
+      internalToken: "changeme"
+
+  # --- Payment Service (Go) ---
+  payment-service:
+    enabled: true
+    port: 8004
+    replicas: 2
+    env:
+      DATABASE_URL: "postgres://ecommerce:$(DB_PASSWORD)@postgresql:5432/payment_db"
+      REDIS_URL: "redis://redis-master:6379/3"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      ORDER_SERVICE_URL: "http://order-service:8003"
+    secrets:
+      internalToken: "changeme"
+      midtransServerKey: ""
+      xenditSecretKey: ""
+      webhookSecret: ""
+
+  # --- Notification Service (Python) ---
+  notification-service:
+    enabled: true
+    port: 8005
+    replicas: 2
+    env:
+      DATABASE_URL: "postgresql+asyncpg://ecommerce:$(DB_PASSWORD)@postgresql:5432/notification_db"
+      REDIS_URL: "redis://redis-master:6379/4"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+    secrets:
+      smtpPassword: ""
+
+  # --- Audit Service (Python) ---
+  audit-service:
+    enabled: true
+    port: 8006
+    replicas: 2
+    env:
+      DATABASE_URL: "postgresql+asyncpg://ecommerce:$(DB_PASSWORD)@postgresql:5432/audit_db"
+      REDIS_URL: "redis://redis-master:6379/5"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+
+  # --- Review Service (Python) ---
+  review-service:
+    enabled: true
+    port: 8007
+
+  # --- Wishlist Service (Python) ---
+  wishlist-service:
+    enabled: true
+    port: 8008
+
+  # --- Coupon Service (Python) ---
+  coupon-service:
+    enabled: true
+    port: 8009
+
+  # --- Shipping Service (Go) ---
+  shipping-service:
+    enabled: true
+    port: 8010
+    secrets:
+      rajaOngkirKey: ""
+
+  # --- Address Service (Python) ---
+  address-service:
+    enabled: true
+    port: 8011
+    secrets:
+      googleMapsApiKey: ""
+
+  # --- Search Service (Python) ---
+  search-service:
+    enabled: true
+    port: 8012
+    env:
+      ELASTICSEARCH_URL: "http://elasticsearch:9200"
+      REDIS_URL: "redis://redis-master:6379/15"
+
+  # --- Dispute Service (Python) ---
+  dispute-service:
+    enabled: true
+    port: 8013
+
+  # --- Chat Service (Go) ---
+  chat-service:
+    enabled: true
+    port: 8014
+    ingress:
+      enabled: true
+      host: ws.ecommerce.local
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+        nginx.ingress.kubernetes.io/websocket-services: "chat-service"
+
+  # --- Flash Sale Service (Go) ---
+  flashsale-service:
+    enabled: true
+    port: 8015
+
+  # --- Loyalty Service (Python) ---
+  loyalty-service:
+    enabled: true
+    port: 8016
+
+  # --- Fraud Service (Python) ---
+  fraud-service:
+    enabled: true
+    port: 8017
+
+  # --- Seller Service (Python) ---
+  seller-service:
+    enabled: true
+    port: 8018
+
+  # --- Analytics Service (Python) ---
+  analytics-service:
+    enabled: true
+    port: 8019
+
+  # --- Admin Service (Python) ---
+  admin-service:
+    enabled: true
+    port: 8020
+
+  # --- Recommendation Service (Python) ---
+  recommendation-service:
+    enabled: true
+    port: 8021
+
+# =====================================================================
+# Infrastructure (Bitnami charts)
+# =====================================================================
+
+postgresql:
+  enabled: true
+  auth:
+    username: ecommerce
+    password: "change_me_in_production"
+    database: postgres
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: "standard"
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {cpu: 2000m, memory: 4Gi}
+  readReplicas:
+    replicaCount: 2
+    persistence:
+      size: 50Gi
+  backup:
+    enabled: true
+    schedule: "0 */6 * * *"  # every 6 hours
+    storageLocation: "s3://ecommerce-backups/postgres/"
+
+redis:
+  enabled: true
+  architecture: replication
+  auth:
+    enabled: true
+    password: "change_me_in_production"
+  master:
+    persistence:
+      size: 10Gi
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: 1000m, memory: 2Gi}
+  replica:
+    replicaCount: 3
+
+kafka:
+  enabled: true
+  replicaCount: 3
+  autoCreateTopicsEnable: true
+  defaultReplicationFactor: 3
+  minInSyncReplicas: 2
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: 2000m, memory: 4Gi}
+  persistence:
+    size: 50Gi
+  zookeeper:
+    replicaCount: 3
+
+elasticsearch:
+  enabled: true
+  master:
+    replicaCount: 3
+    persistence:
+      size: 30Gi
+  data:
+    replicaCount: 3
+    persistence:
+      size: 100Gi
+  coordinating:
+    replicaCount: 2
+  auth:
+    enabled: true
+    password: "change_me_in_production"
+
+# =====================================================================
+# Network Policies (security)
+# =====================================================================
+networkPolicy:
+  enabled: true
+  # Only allow services to talk to:
+  # 1. API Gateway (ingress)
+  # 2. PostgreSQL, Redis, Kafka, Elasticsearch
+  # 3. Other services via mTLS (internal)
+  # Deny all other traffic by default
+
+# =====================================================================
+# Service Mesh (Istio / Linkerd)
+# =====================================================================
+serviceMesh:
+  enabled: false
+  # If using Istio, set to true and apply:
+  # - PeerAuthentication (strict mTLS)
+  # - DestinationRule (load balancing)
+  # - AuthorizationPolicy (service-to-service RBAC)

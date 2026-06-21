@@ -1,0 +1,60 @@
+# Dev environment — cheap, single replica, no autoscaling
+global:
+  environment: "development"
+  imageTag: "latest"
+
+serviceDefaults:
+  replicas: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+services:
+  api-gateway:
+    replicas: 1
+  auth-service:
+    replicas: 1
+  catalog-service:
+    replicas: 1
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: 1000m, memory: 1Gi}
+  order-service:
+    replicas: 1
+  payment-service:
+    replicas: 1
+
+# Smaller infra
+postgresql:
+  primary:
+    persistence:
+      size: 10Gi
+  readReplicas:
+    replicaCount: 0
+
+redis:
+  architecture: standalone
+  replica:
+    replicaCount: 0
+
+kafka:
+  replicaCount: 1
+  zookeeper:
+    replicaCount: 1
+
+elasticsearch:
+  master:
+    replicaCount: 1
+  data:
+    replicaCount: 1
+  coordinating:
+    replicaCount: 0
+
+# No NetworkPolicy in dev (easier debugging)
+networkPolicy:
+  enabled: false
+
+# No ingress in dev (use port-forward)
+ingress:
+  enabled: false

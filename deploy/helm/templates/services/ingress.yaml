@@ -1,0 +1,68 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-api-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ecommerce.labels" . | nindent 4 }}
+  annotations:
+    {{- range $k, $v := .Values.ingress.annotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ (index $.Values.services .service).port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
+
+{{/* WebSocket Ingress for Chat Service */}}
+{{- $chatSvc := .Values.services.chat-service }}
+{{- if and $chatSvc.enabled $chatSvc.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-chat-ws
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- range $k, $v := $chatSvc.ingress.annotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ $chatSvc.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: {{ $chatSvc.port }}
+{{- end }}

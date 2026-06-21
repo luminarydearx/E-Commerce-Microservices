@@ -1,0 +1,43 @@
+apiVersion: v2
+name: ecommerce-microservices
+description: A production-grade e-commerce microservices platform (Shopee/Tokopedia scale)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/luminarydearx/ecommerce-microservices
+sources:
+  - https://github.com/luminarydearx/ecommerce-microservices
+maintainers:
+  - name: E-Commerce Platform Team
+    email: dev@ecommerce.local
+keywords:
+  - ecommerce
+  - microservices
+  - go
+  - java
+  - python
+  - fastapi
+  - spring-boot
+  - kubernetes
+  - kafka
+  - elasticsearch
+  - postgres
+  - redis
+icon: https://raw.githubusercontent.com/luminarydearx/ecommerce-microservices/main/docs/assets/logo.png
+dependencies:
+  - name: postgresql
+    version: "15.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "20.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: kafka
+    version: "29.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: kafka.enabled
+  - name: elasticsearch
+    version: "21.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: elasticsearch.enabled

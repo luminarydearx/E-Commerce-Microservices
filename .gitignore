@@ -1,0 +1,141 @@
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Keys & secrets
+keys/
+*.pem
+!keys/public.example.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual env
+venv/
+.venv/
+env/
+ENV/
+
+# Testing
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+.mvn/
+mvnw
+mvnw.cmd
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+*.pid
+*.log
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+download/*.zip
+!download/.gitkeep
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup
+*.bak
+*.backup
+*.old
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Kafka
+kafka-logs/
+zookeeper/
+
+# Editor
+*.sublime-*

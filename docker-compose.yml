@@ -1,0 +1,568 @@
+version: '3.9'
+
+services:
+  # ===== Infrastructure =====
+  postgres:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init-multiple-db.sh:/docker-entrypoint-initdb.d/init-multiple-db.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ecommerce
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: ecommerce-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOO_TICK_TIME: 2000
+    networks:
+      - ecommerce
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: ecommerce-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    ports:
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ecommerce
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: ecommerce-kafka-ui
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8090:8080"
+    networks:
+      - ecommerce
+
+  # ===== Observability =====
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    container_name: ecommerce-otel
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+    networks:
+      - ecommerce
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: ecommerce-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "14268:14268"
+    networks:
+      - ecommerce
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: ecommerce-prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - ecommerce
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: ecommerce-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ecommerce
+
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: ecommerce-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    networks:
+      - ecommerce
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: ecommerce-promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./infra/loki/promtail.yaml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - ecommerce
+
+  # ===== Application Services =====
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: ecommerce-api-gateway
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8080
+      - JWT_PUBLIC_KEY_PATH=/app/keys/public.pem
+      - REDIS_URL=redis://redis:6379/6
+      - OTEL_ENDPOINT=otel-collector:4317
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - CATALOG_SERVICE_URL=http://catalog-service:8002
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - PAYMENT_SERVICE_URL=http://payment-service:8004
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8005
+      - AUDIT_SERVICE_URL=http://audit-service:8006
+    volumes:
+      - ./keys:/app/keys:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-auth-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/auth_db
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_PRIVATE_KEY_PATH=/app/keys/private.pem
+      - JWT_PUBLIC_KEY_PATH=/app/keys/public.pem
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+    volumes:
+      - ./keys:/app/keys:ro
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  catalog-service:
+    build:
+      context: ./catalog-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-catalog-service
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/catalog_db
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - SPRING_DATA_REDIS_URL=redis://redis:6379/1
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=http://otel-collector:4318
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-order-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/order_db
+      - REDIS_URL=redis://redis:6379/2
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+      - CATALOG_SERVICE_URL=http://catalog-service:8002
+      - PAYMENT_SERVICE_URL=http://payment-service:8004
+      - INTERNAL_TOKEN=change_me_internal_secret
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  payment-service:
+    build:
+      context: ./payment-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-payment-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/payment_db
+      - REDIS_URL=redis://redis:6379/3
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - INTERNAL_TOKEN=change_me_internal_secret
+      - MIDTRANS_SERVER_KEY=${PAYMENT_MIDTRANS_SERVER_KEY:-}
+      - MIDTRANS_BASE_URL=${PAYMENT_MIDTRANS_BASE_URL:-https://api.sandbox.midtrans.com/v2}
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-notification-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/notification_db
+      - REDIS_URL=redis://redis:6379/4
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  audit-service:
+    build:
+      context: ./audit-service
+      dockerfile: Dockerfile
+    container_name: ecommerce-audit-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/audit_db
+      - REDIS_URL=redis://redis:6379/5
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+    ports:
+      - "8006:8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ecommerce
+
+  # ===== Extended Feature Services =====
+  review-service:
+    build: { context: ./review-service, dockerfile: Dockerfile }
+    container_name: ecommerce-review-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/review_db
+      - REDIS_URL=redis://redis:6379/10
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - OTEL_ENDPOINT=otel-collector:4317
+    ports: ["8007:8007"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  wishlist-service:
+    build: { context: ./wishlist-service, dockerfile: Dockerfile }
+    container_name: ecommerce-wishlist-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/wishlist_db
+      - REDIS_URL=redis://redis:6379/11
+    ports: ["8008:8008"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  coupon-service:
+    build: { context: ./coupon-service, dockerfile: Dockerfile }
+    container_name: ecommerce-coupon-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/coupon_db
+      - REDIS_URL=redis://redis:6379/12
+    ports: ["8009:8009"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  shipping-service:
+    build: { context: ./shipping-service, dockerfile: Dockerfile }
+    container_name: ecommerce-shipping-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shipping_db
+      - REDIS_URL=redis://redis:6379/13
+      - OTEL_ENDPOINT=otel-collector:4317
+      - INTERNAL_TOKEN=change_me_internal_secret
+      - RAJA_ONGKIR_KEY=${RAJA_ONGKIR_KEY:-}
+    ports: ["8010:8010"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  address-service:
+    build: { context: ./address-service, dockerfile: Dockerfile }
+    container_name: ecommerce-address-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/address_db
+      - REDIS_URL=redis://redis:6379/14
+    ports: ["8011:8011"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  search-service:
+    build: { context: ./search-service, dockerfile: Dockerfile }
+    container_name: ecommerce-search-service
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/15
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    ports: ["8012:8012"]
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  dispute-service:
+    build: { context: ./dispute-service, dockerfile: Dockerfile }
+    container_name: ecommerce-dispute-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/dispute_db
+      - REDIS_URL=redis://redis:6379/16
+    ports: ["8013:8013"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  chat-service:
+    build: { context: ./chat-service, dockerfile: Dockerfile }
+    container_name: ecommerce-chat-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/chat_db
+      - REDIS_URL=redis://redis:6379/17
+    ports: ["8014:8014"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  flashsale-service:
+    build: { context: ./flashsale-service, dockerfile: Dockerfile }
+    container_name: ecommerce-flashsale-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/flashsale_db
+      - REDIS_ADDR=redis:6379
+    ports: ["8015:8015"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  loyalty-service:
+    build: { context: ./loyalty-service, dockerfile: Dockerfile }
+    container_name: ecommerce-loyalty-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/loyalty_db
+      - REDIS_URL=redis://redis:6379/18
+    ports: ["8016:8016"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  fraud-service:
+    build: { context: ./fraud-service, dockerfile: Dockerfile }
+    container_name: ecommerce-fraud-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/fraud_db
+      - REDIS_URL=redis://redis:6379/19
+    ports: ["8017:8017"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  seller-service:
+    build: { context: ./seller-service, dockerfile: Dockerfile }
+    container_name: ecommerce-seller-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/seller_db
+      - REDIS_URL=redis://redis:6379/20
+    ports: ["8018:8018"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  analytics-service:
+    build: { context: ./analytics-service, dockerfile: Dockerfile }
+    container_name: ecommerce-analytics-service
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/analytics_db
+      - REDIS_URL=redis://redis:6379/21
+    ports: ["8019:8019"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  admin-service:
+    build: { context: ./admin-service, dockerfile: Dockerfile }
+    container_name: ecommerce-admin-service
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/22
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - CATALOG_SERVICE_URL=http://catalog-service:8002
+      - ORDER_SERVICE_URL=http://order-service:8003
+      - PAYMENT_SERVICE_URL=http://payment-service:8004
+      - AUDIT_SERVICE_URL=http://audit-service:8006
+      - FRAUD_SERVICE_URL=http://fraud-service:8017
+      - SELLER_SERVICE_URL=http://seller-service:8018
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8019
+    ports: ["8020:8020"]
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  recommendation-service:
+    build: { context: ./recommendation-service, dockerfile: Dockerfile }
+    container_name: ecommerce-recommendation-service
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/23
+    ports: ["8021:8021"]
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [ecommerce]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    container_name: ecommerce-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports: ["9200:9200"]
+    networks: [ecommerce]
+
+networks:
+  ecommerce:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  es_data:

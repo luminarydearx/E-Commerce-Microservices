@@ -1,0 +1,108 @@
+server:
+  port: 8002
+  shutdown: graceful
+  compression:
+    enabled: true
+  tomcat:
+    max-threads: 200
+    accept-count: 100
+    max-connections: 8192
+    connection-timeout: 10000
+
+spring:
+  application:
+    name: catalog-service
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/catalog_db}
+    username: ${DATABASE_USER:postgres}
+    password: ${DATABASE_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      max-lifetime: 1800000
+      connection-timeout: 30000
+      leak-detection-threshold: 30000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc.batch_size: 50
+        order_inserts: true
+        order_updates: true
+        default_batch_fetch_size: 50
+        jdbc.time_zone: UTC
+    open-in-view: false
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:6379/1}
+      timeout: 5s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 5
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      group-id: catalog-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.ecommerce.*"
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          public-key-location: ${JWT_PUBLIC_KEY_PATH:file:/app/keys/public.pem}
+          issuer-uri: ${JWT_ISSUER:auth-service}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: catalog-service
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
+
+tracing:
+  sampling.probability: ${OTEL_SAMPLING:1.0}
+  otlp.endpoint: ${OTEL_ENDPOINT:http://localhost:4317}
+
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.ecommerce: DEBUG
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId}/%X{spanId}] %-5level %logger{36} - %msg%n"
+
+# App-specific
+catalog:
+  cache:
+    product-ttl: 300s
+    category-ttl: 3600s
+  search:
+    min-query-length: 2
+    max-page-size: 100
+  inventory:
+    reservation-timeout: 900s  # 15 menit

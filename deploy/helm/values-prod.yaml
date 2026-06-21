@@ -1,0 +1,150 @@
+# Production environment — full HA, autoscaling, strict security
+global:
+  environment: "production"
+  imageTag: "1.0.0"
+  mtls:
+    enabled: true
+    clusterIssuer: "internal-ca"
+
+serviceDefaults:
+  replicas: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+services:
+  api-gateway:
+    replicas: 5
+    autoscaling:
+      minReplicas: 5
+      maxReplicas: 30
+      targetCPUUtilizationPercentage: 60
+
+  catalog-service:
+    replicas: 4
+    autoscaling:
+      minReplicas: 4
+      maxReplicas: 25
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {cpu: 2000m, memory: 4Gi}
+
+  order-service:
+    replicas: 4
+    autoscaling:
+      minReplicas: 4
+      maxReplicas: 20
+
+  payment-service:
+    replicas: 4
+    autoscaling:
+      minReplicas: 4
+      maxReplicas: 20
+
+  search-service:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 15
+
+  flashsale-service:
+    replicas: 5  # high traffic during flash sale
+    autoscaling:
+      minReplicas: 5
+      maxReplicas: 30
+
+  chat-service:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 15
+
+# Production-grade infrastructure
+postgresql:
+  primary:
+    persistence:
+      size: 200Gi
+      storageClass: "fast-ssd"
+    resources:
+      requests: {cpu: 1000m, memory: 4Gi}
+      limits: {cpu: 4000m, memory: 16Gi}
+  readReplicas:
+    replicaCount: 3
+    persistence:
+      size: 200Gi
+  backup:
+    enabled: true
+
+redis:
+  architecture: replication
+  master:
+    persistence:
+      size: 20Gi
+    resources:
+      requests: {cpu: 500m, memory: 2Gi}
+      limits: {cpu: 2000m, memory: 8Gi}
+  replica:
+    replicaCount: 3
+
+kafka:
+  replicaCount: 5
+  defaultReplicationFactor: 3
+  minInSyncReplicas: 2
+  resources:
+    requests: {cpu: 1000m, memory: 4Gi}
+    limits: {cpu: 4000m, memory: 16Gi}
+  persistence:
+    size: 200Gi
+
+elasticsearch:
+  master:
+    replicaCount: 3
+    persistence:
+      size: 50Gi
+  data:
+    replicaCount: 5
+    persistence:
+      size: 500Gi
+    resources:
+      requests: {cpu: 1000m, memory: 4Gi}
+      limits: {cpu: 4000m, memory: 16Gi}
+  coordinating:
+    replicaCount: 3
+
+# Strict NetworkPolicy
+networkPolicy:
+  enabled: true
+
+# Production ingress with TLS
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "200"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload";
+      more_set_headers "Content-Security-Policy: default-src 'self'; frame-ancestors 'none'";
+
+# Service mesh for mTLS
+serviceMesh:
+  enabled: true
+
+# Monitoring
+prometheus:
+  serviceMonitor:
+    enabled: true
+grafana:
+  dashboards:
+    enabled: true
